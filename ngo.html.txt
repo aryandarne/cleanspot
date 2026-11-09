@@ -1,0 +1,224 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>CleanSpot · NGO</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="styles.css">
+<style>
+  .minimap{height:150px;border-radius:12px;border:1px solid var(--line);margin:10px 0;z-index:0}
+  .rep img.photo{width:100%;max-height:240px;object-fit:cover;border-radius:14px;background:var(--line)}
+  .rep .row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:10px 0 4px}
+  .rep .addr{font-weight:600}
+  .rep .actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+  .stats{display:flex;gap:8px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">Clean<span>Spot</span> <span class="muted">NGO</span></div>
+  <div id="who" class="who hidden">
+    <button class="btn small" id="logout">Log out</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- AUTH -->
+  <section id="auth" class="card hidden">
+    <h1>NGO sign in</h1>
+    <p class="muted">Log in with your NGO account to see all reports.</p>
+    <form id="authForm">
+      <div class="field"><label for="email">Email</label>
+        <input id="email" type="email" autocomplete="email" required></div>
+      <div class="field"><label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required></div>
+      <button class="btn primary block" id="authBtn">Log in</button>
+      <p class="msg" id="authMsg" role="alert"></p>
+    </form>
+  </section>
+
+  <!-- NOT NGO -->
+  <section id="denied" class="card hidden">
+    <h1>Not an NGO account</h1>
+    <p class="muted">This account does not have NGO access. Use the citizen app to report waste.</p>
+    <a class="btn primary block" href="index.html">Go to citizen app</a>
+  </section>
+
+  <!-- NGO APP -->
+  <section id="app" class="hidden" style="display:grid;gap:16px">
+    <div class="card">
+      <h2>All reports</h2>
+      <div class="stats">
+        <span class="chip" id="statPending">0 pending</span>
+        <span class="chip" id="statCleaned">0 cleaned</span>
+        <span class="chip" id="statLive">Live</span>
+      </div>
+    </div>
+    <div id="list" class="list"></div>
+  </section>
+</main>
+
+<nav class="bar hidden" id="bar">
+  <a href="index.html">Citizen app</a>
+  <a href="ngo.html" aria-current="true">Reports</a>
+</nav>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script>
+const { SUPABASE_URL, SUPABASE_ANON_KEY } = window.CLEANSPOT_CONFIG;
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const LABELS = {plastic:"Plastic",construction_debris:"Construction debris",organic:"Organic",e_waste:"E-waste",hazardous:"Hazardous"};
+const MAX_REPORTS = 50;
+let user = null, isNgo = false, maps = [], lastSig = "", pollTimer = null, channel = null;
+
+function toast(t){
+  const el = document.createElement("div");
+  el.className = "toast"; el.textContent = t; document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+function busy(btn, on, label){
+  if(on){ btn.dataset.t = btn.textContent; btn.textContent = label || "Please wait…"; }
+  else { btn.textContent = btn.dataset.t || btn.textContent; }
+  btn.disabled = on;
+}
+
+/* ---------- AUTH ---------- */
+$("authForm").addEventListener("submit", async e => {
+  e.preventDefault(); $("authMsg").textContent = "";
+  const btn = $("authBtn"); busy(btn, true);
+  const { error } = await sb.auth.signInWithPassword({ email:$("email").value.trim(), password:$("password").value });
+  busy(btn, false);
+  if(error) $("authMsg").textContent = error.message;
+});
+$("logout").addEventListener("click", () => sb.auth.signOut());
+
+async function show(u){
+  if(u && user && u.id === user.id) return;
+  user = u; isNgo = false; stopLive();
+  $("auth").classList.toggle("hidden", !!u);
+  $("who").classList.toggle("hidden", !u);
+  $("bar").classList.toggle("hidden", !u);
+  $("denied").classList.add("hidden"); $("app").classList.add("hidden");
+  if(!u) return;
+  const { data, error } = await sb.from("profiles").select("role").eq("id", u.id).single();
+  if(error || data?.role !== "ngo"){ $("denied").classList.remove("hidden"); return; }
+  isNgo = true; $("app").classList.remove("hidden");
+  lastSig = ""; await loadReports(); startLive();
+}
+sb.auth.onAuthStateChange((_e, s) => setTimeout(() => show(s?.user || null), 0));
+sb.auth.getSession().then(({data}) => show(data.session?.user || null));
+
+/* ---------- LIVE UPDATES ---------- */
+function startLive(){
+  channel = sb.channel("reports-live")
+    .on("postgres_changes", {event:"*", schema:"public", table:"reports"}, () => loadReports())
+    .subscribe(status => { $("statLive").textContent = status === "SUBSCRIBED" ? "Live" : "Polling 15s"; });
+  pollTimer = setInterval(loadReports, 15000);
+}
+function stopLive(){
+  if(channel){ sb.removeChannel(channel); channel = null; }
+  if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
+}
+
+/* ---------- GEOCODING (cached, 1 request per second) ---------- */
+let geoCache = {};
+try { geoCache = JSON.parse(localStorage.getItem("cs_geo") || "{}"); } catch {}
+const geoKey = (lat, lng) => lat.toFixed(4) + "," + lng.toFixed(4);
+const geoQueue = [], queued = new Set();
+let geoRunning = false;
+
+function applyAddress(key){
+  document.querySelectorAll('[data-geo="' + key + '"]').forEach(el => el.textContent = geoCache[key]);
+}
+function requestAddress(lat, lng){
+  const key = geoKey(lat, lng);
+  if(geoCache[key]) return applyAddress(key);
+  if(queued.has(key)) return;
+  queued.add(key); geoQueue.push({lat, lng, key});
+  runGeo();
+}
+async function runGeo(){
+  if(geoRunning) return; geoRunning = true;
+  while(geoQueue.length){
+    const {lat, lng, key} = geoQueue.shift();
+    try {
+      // Browsers cannot set a User-Agent header; the Referer (your site) identifies the app.
+      const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat=${lat}&lon=${lng}`,
+        {headers:{"Accept":"application/json"}});
+      if(!r.ok) throw new Error(r.status);
+      const j = await r.json();
+      geoCache[key] = j.display_name || "Address not found";
+      try { localStorage.setItem("cs_geo", JSON.stringify(geoCache)); } catch {}
+    } catch { geoCache[key] = "Address unavailable"; }
+    queued.delete(key); applyAddress(key);
+    await new Promise(ok => setTimeout(ok, 1100));
+  }
+  geoRunning = false;
+}
+
+/* ---------- REPORTS ---------- */
+async function loadReports(){
+  if(!isNgo) return;
+  const { data, error } = await sb.from("reports").select("*").order("created_at", {ascending:false}).limit(MAX_REPORTS);
+  if(error) return toast(error.message);
+  const sig = data.map(r => r.id + r.status).join("|");
+  if(sig === lastSig) return;          // nothing changed: skip re-render (no flicker)
+  lastSig = sig; render(data);
+}
+
+function render(rows){
+  maps.forEach(m => m.remove()); maps = [];
+  const pending = rows.filter(r => r.status === "pending").length;
+  $("statPending").textContent = pending + " pending";
+  $("statCleaned").textContent = (rows.length - pending) + " cleaned";
+
+  $("list").innerHTML = rows.length ? rows.map(r => {
+    const key = geoKey(r.lat, r.lng);
+    return `
+    <article class="card rep" data-id="${esc(r.id)}">
+      <img class="photo" src="${esc(r.photo_url)}" alt="Reported waste" loading="lazy">
+      <div class="row">
+        <b>${esc(LABELS[r.waste_type] || r.waste_type)}</b>
+        <span class="badge ${esc(r.status)}">${esc(r.status)}</span>
+      </div>
+      <div class="muted">${new Date(r.created_at).toLocaleString([], {dateStyle:"medium", timeStyle:"short"})}</div>
+      ${r.note ? `<p>${esc(r.note)}</p>` : ""}
+      <div class="addr" data-geo="${key}">${esc(geoCache[key] || "Finding address…")}</div>
+      <div class="minimap" id="m-${esc(r.id)}"></div>
+      <div class="actions">
+        <a class="btn small" target="_blank" rel="noopener"
+           href="https://www.google.com/maps?q=${r.lat},${r.lng}">Open in Google Maps</a>
+        ${r.status === "pending"
+          ? `<button class="btn small accent" data-clean="${esc(r.id)}">Mark cleaned</button>`
+          : `<button class="btn small" disabled>Cleaned ✓</button>`}
+      </div>
+    </article>`;
+  }).join("") : '<div class="card"><p class="muted">No reports yet.</p></div>';
+
+  rows.forEach(r => {
+    const el = $("m-" + r.id); if(!el) return;
+    const m = L.map(el, {zoomControl:false, dragging:false, scrollWheelZoom:false, doubleClickZoom:false,
+                         boxZoom:false, keyboard:false, touchZoom:false, attributionControl:true}).setView([r.lat, r.lng], 16);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom:19, attribution:"© OpenStreetMap contributors"}).addTo(m);
+    L.marker([r.lat, r.lng], {icon:L.divIcon({className:"pin", iconSize:[26,26], iconAnchor:[13,13]})}).addTo(m);
+    maps.push(m);
+    requestAddress(r.lat, r.lng);
+  });
+}
+
+$("list").addEventListener("click", async e => {
+  const btn = e.target.closest("[data-clean]"); if(!btn) return;
+  busy(btn, true, "Saving…");
+  const { data, error } = await sb.from("reports").update({status:"cleaned"}).eq("id", btn.dataset.clean).select();
+  if(error || !data?.length){ busy(btn, false); return toast(error?.message || "Could not update (are you an NGO?)"); }
+  toast("Marked as cleaned"); lastSig = ""; loadReports();
+});
+</script>
+</body>
+</html>

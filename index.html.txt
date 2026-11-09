@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>CleanSpot</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Clean<span>Spot</span></div>
+  <div id="who" class="who hidden">
+    <span class="chip" id="points">0 pts</span>
+    <button class="btn small" id="logout">Log out</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- AUTH -->
+  <section id="auth" class="card hidden">
+    <h1>Spot it. Report it. Earn points.</h1>
+    <p class="muted">Photograph dumped waste and help your local NGO clean it up.</p>
+    <div class="seg">
+      <button type="button" data-mode="login" aria-pressed="true">Log in</button>
+      <button type="button" data-mode="signup" aria-pressed="false">Sign up</button>
+    </div>
+    <form id="authForm">
+      <div class="field"><label for="email">Email</label>
+        <input id="email" type="email" autocomplete="email" required></div>
+      <div class="field"><label for="password">Password (6+ characters)</label>
+        <input id="password" type="password" minlength="6" autocomplete="current-password" required></div>
+      <button class="btn primary block" id="authBtn">Log in</button>
+      <p class="msg" id="authMsg" role="alert"></p>
+    </form>
+  </section>
+
+  <!-- APP -->
+  <section id="wallet" class="card hero hidden">
+    <div class="muted">Your wallet</div>
+    <div class="big" id="pointsBig">0</div>
+    <div class="muted">points · +10 for every report</div>
+  </section>
+
+  <section id="view-report" class="card hidden">
+    <h2>Report waste</h2>
+    <form id="reportForm">
+      <div class="field">
+        <label>Photo</label>
+        <input id="photo" type="file" accept="image/*" capture="environment" hidden>
+        <label for="photo" class="btn accent block">Take or choose photo</label>
+        <img id="preview" class="preview hidden" alt="Photo preview">
+        <div class="muted" id="photoInfo"></div>
+      </div>
+      <div class="field">
+        <label>Location</label>
+        <div id="map" class="map"></div>
+        <div class="muted" id="gpsInfo">Locating…</div>
+        <button type="button" class="btn small" id="locate">Use my location</button>
+      </div>
+      <div class="field"><label for="type">Waste type</label>
+        <select id="type" required>
+          <option value="" disabled selected>Choose a type</option>
+          <option value="plastic">Plastic</option>
+          <option value="construction_debris">Construction debris</option>
+          <option value="organic">Organic</option>
+          <option value="e_waste">E-waste</option>
+          <option value="hazardous">Hazardous</option>
+        </select></div>
+      <div class="field"><label for="note">Note (optional)</label>
+        <textarea id="note" maxlength="500" placeholder="Size, access, landmarks…"></textarea></div>
+      <button class="btn primary block" id="submitBtn">Submit report</button>
+    </form>
+  </section>
+
+  <section id="view-mine" class="card hidden">
+    <h2>My reports</h2>
+    <div id="mine" class="list"><p class="muted">No reports yet.</p></div>
+  </section>
+</main>
+
+<nav class="bar hidden" id="bar">
+  <button data-view="report" aria-current="true">Report</button>
+  <button data-view="mine">My reports</button>
+  <a href="ngo.html">NGO</a>
+</nav>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script>
+const { SUPABASE_URL, SUPABASE_ANON_KEY } = window.CLEANSPOT_CONFIG;
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const LABELS = {plastic:"Plastic",construction_debris:"Construction debris",organic:"Organic",e_waste:"E-waste",hazardous:"Hazardous"};
+let user = null, map = null, marker = null, mode = "login", photoBlob = null;
+const pos = {lat:null, lng:null, acc:null};
+
+function toast(t){
+  const el = document.createElement("div");
+  el.className = "toast"; el.textContent = t; document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+function busy(btn, on, label){
+  if(on){ btn.dataset.t = btn.textContent; btn.textContent = label || "Please wait…"; }
+  else { btn.textContent = btn.dataset.t || btn.textContent; }
+  btn.disabled = on;
+}
+
+/* ---------- AUTH ---------- */
+document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => {
+  mode = b.dataset.mode;
+  document.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  $("authBtn").textContent = mode === "signup" ? "Create account" : "Log in";
+  $("password").autocomplete = mode === "signup" ? "new-password" : "current-password";
+  $("authMsg").textContent = "";
+}));
+$("authForm").addEventListener("submit", async e => {
+  e.preventDefault(); $("authMsg").textContent = "";
+  const email = $("email").value.trim(), password = $("password").value;
+  const btn = $("authBtn"); busy(btn, true);
+  const { data, error } = mode === "signup"
+    ? await sb.auth.signUp({ email, password })
+    : await sb.auth.signInWithPassword({ email, password });
+  busy(btn, false);
+  if(error) return $("authMsg").textContent = error.message;
+  if(!data.session) $("authMsg").textContent = "Account created. Turn off “Confirm email” in Supabase, then log in.";
+});
+$("logout").addEventListener("click", () => sb.auth.signOut());
+
+function show(u){
+  if((u && user && u.id === user.id) || (!u && !user && $("auth").dataset.ready)) return;
+  user = u; $("auth").dataset.ready = "1";
+  ["auth"].forEach(id => $(id).classList.toggle("hidden", !!u));
+  ["who","wallet","bar"].forEach(id => $(id).classList.toggle("hidden", !u));
+  if(!u){ $("view-report").classList.add("hidden"); $("view-mine").classList.add("hidden"); return; }
+  switchTab("report"); loadPoints(); loadReports();
+}
+sb.auth.onAuthStateChange((_e, s) => setTimeout(() => show(s?.user || null), 0));
+sb.auth.getSession().then(({data}) => show(data.session?.user || null));
+
+/* ---------- TABS ---------- */
+function switchTab(v){
+  $("view-report").classList.toggle("hidden", v !== "report");
+  $("view-mine").classList.toggle("hidden", v !== "mine");
+  document.querySelectorAll("#bar button").forEach(b => b.setAttribute("aria-current", b.dataset.view === v));
+  if(v === "report") initMap();
+  if(v === "mine") loadReports();
+  window.scrollTo({top:0});
+}
+document.querySelectorAll("#bar button").forEach(b => b.addEventListener("click", () => switchTab(b.dataset.view)));
+
+/* ---------- WALLET + LIST ---------- */
+async function loadPoints(){
+  const { data } = await sb.from("profiles").select("points_balance").eq("id", user.id).single();
+  const n = data?.points_balance ?? 0;
+  $("pointsBig").textContent = n; $("points").textContent = n + " pts";
+}
+async function loadReports(){
+  const { data, error } = await sb.from("reports").select("*").eq("user_id", user.id).order("created_at", {ascending:false});
+  if(error) return toast(error.message);
+  $("mine").innerHTML = data.length ? data.map(r => `
+    <div class="item">
+      <img src="${esc(r.photo_url)}" alt="" loading="lazy">
+      <div><b>${esc(LABELS[r.waste_type] || r.waste_type)}</b>
+        <span class="badge ${esc(r.status)}">${esc(r.status)}</span>
+        <div class="muted">${new Date(r.created_at).toLocaleString([], {dateStyle:"medium", timeStyle:"short"})}</div></div>
+    </div>`).join("") : '<p class="muted">No reports yet.</p>';
+}
+
+/* ---------- MAP + GPS ---------- */
+function initMap(){
+  if(map) return setTimeout(() => map.invalidateSize(), 50);
+  map = L.map("map").setView([20, 0], 2);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom:19, attribution:"© OpenStreetMap contributors"}).addTo(map);
+  map.on("click", e => setPin(e.latlng.lat, e.latlng.lng, null));
+  locate();
+}
+function setPin(lat, lng, acc, zoom){
+  pos.lat = lat; pos.lng = lng; pos.acc = acc;
+  if(!marker){
+    marker = L.marker([lat, lng], {draggable:true, icon:L.divIcon({className:"pin", iconSize:[26,26], iconAnchor:[13,13]})}).addTo(map);
+    marker.on("dragend", () => { const p = marker.getLatLng(); setPin(p.lat, p.lng, null); });
+  } else marker.setLatLng([lat, lng]);
+  if(zoom) map.setView([lat, lng], zoom);
+  $("gpsInfo").textContent = acc != null
+    ? `GPS accuracy ±${Math.round(acc)} m. Drag the pin to adjust.`
+    : "Pin placed manually. Drag it to adjust.";
+}
+function locate(){
+  if(!navigator.geolocation) return $("gpsInfo").textContent = "GPS unavailable. Tap the map to place the pin.";
+  $("gpsInfo").textContent = "Finding you…";
+  navigator.geolocation.getCurrentPosition(
+    p => setPin(p.coords.latitude, p.coords.longitude, p.coords.accuracy, 17),
+    () => $("gpsInfo").textContent = "Location blocked. Tap the map to place the pin.",
+    {enableHighAccuracy:true, timeout:15000, maximumAge:0});
+}
+$("locate").addEventListener("click", locate);
+
+/* ---------- PHOTO (compress to ~1 MB) ---------- */
+async function compress(file, maxBytes = 1000000){
+  let bmp;
+  try { bmp = await createImageBitmap(file, {imageOrientation:"from-image"}); }
+  catch { bmp = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = URL.createObjectURL(file); }); }
+  const w = bmp.width || bmp.naturalWidth, h = bmp.height || bmp.naturalHeight;
+  let scale = Math.min(1, 1600 / Math.max(w, h)), blob;
+  const c = document.createElement("canvas"), ctx = c.getContext("2d");
+  const toBlob = q => new Promise(r => c.toBlob(r, "image/jpeg", q));
+  for(let round = 0; round < 4; round++){
+    c.width = Math.round(w * scale); c.height = Math.round(h * scale);
+    ctx.drawImage(bmp, 0, 0, c.width, c.height);
+    for(let q = 0.82; q >= 0.45; q -= 0.1){ blob = await toBlob(q); if(blob && blob.size <= maxBytes) return blob; }
+    scale *= 0.8;
+  }
+  return blob;
+}
+$("photo").addEventListener("change", async e => {
+  const f = e.target.files[0]; if(!f) return;
+  $("photoInfo").textContent = "Compressing…";
+  try {
+    photoBlob = await compress(f);
+    $("preview").src = URL.createObjectURL(photoBlob); $("preview").classList.remove("hidden");
+    $("photoInfo").textContent = `Ready · ${Math.round(photoBlob.size / 1024)} KB`;
+  } catch { photoBlob = null; $("photoInfo").textContent = "Could not read that image."; }
+});
+
+/* ---------- SUBMIT ---------- */
+$("reportForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  if(!photoBlob) return toast("Add a photo first");
+  if(pos.lat == null) return toast("Set the location on the map");
+  const btn = $("submitBtn"); busy(btn, true, "Sending…");
+  try {
+    const path = `${user.id}/${Date.now()}.jpg`;
+    const up = await sb.storage.from("report-photos").upload(path, photoBlob, {contentType:"image/jpeg", cacheControl:"3600"});
+    if(up.error) throw up.error;
+    const { data:{ publicUrl } } = sb.storage.from("report-photos").getPublicUrl(path);
+    const ins = await sb.from("reports").insert({
+      user_id:user.id, photo_url:publicUrl, lat:pos.lat, lng:pos.lng, accuracy:pos.acc,
+      waste_type:$("type").value, note:$("note").value.trim() || null });
+    if(ins.error) throw ins.error;
+    $("reportForm").reset(); photoBlob = null;
+    $("preview").classList.add("hidden"); $("photoInfo").textContent = "";
+    toast("Report sent. +10 points!");
+    loadPoints(); loadReports();
+  } catch(err){ toast(err.message || "Something went wrong"); }
+  finally { busy(btn, false); }
+});
+</script>
+</body>
+</html>
