@@ -40,7 +40,7 @@
   <section id="wallet" class="card hero hidden">
     <div class="muted">Your wallet</div>
     <div class="big" id="pointsBig">0</div>
-    <div class="muted">points · +10 for every report</div>
+    <div class="muted">points Â· +10 for every report</div>
   </section>
 
   <section id="view-report" class="card hidden">
@@ -56,7 +56,7 @@
       <div class="field">
         <label>Location</label>
         <div id="map" class="map"></div>
-        <div class="muted" id="gpsInfo">Locating…</div>
+        <div class="muted" id="gpsInfo">Locatingâ€¦</div>
         <button type="button" class="btn small" id="locate">Use my location</button>
       </div>
       <div class="field"><label for="type">Waste type</label>
@@ -69,7 +69,7 @@
           <option value="hazardous">Hazardous</option>
         </select></div>
       <div class="field"><label for="note">Note (optional)</label>
-        <textarea id="note" maxlength="500" placeholder="Size, access, landmarks…"></textarea></div>
+        <textarea id="note" maxlength="500" placeholder="Size, access, landmarksâ€¦"></textarea></div>
       <button class="btn primary block" id="submitBtn">Submit report</button>
     </form>
   </section>
@@ -104,7 +104,7 @@ function toast(t){
   setTimeout(() => el.remove(), 3200);
 }
 function busy(btn, on, label){
-  if(on){ btn.dataset.t = btn.textContent; btn.textContent = label || "Please wait…"; }
+  if(on){ btn.dataset.t = btn.textContent; btn.textContent = label || "Please waitâ€¦"; }
   else { btn.textContent = btn.dataset.t || btn.textContent; }
   btn.disabled = on;
 }
@@ -126,7 +126,7 @@ $("authForm").addEventListener("submit", async e => {
     : await sb.auth.signInWithPassword({ email, password });
   busy(btn, false);
   if(error) return $("authMsg").textContent = error.message;
-  if(!data.session) $("authMsg").textContent = "Account created. Turn off “Confirm email” in Supabase, then log in.";
+  if(!data.session) $("authMsg").textContent = "Account created. Turn off â€œConfirm emailâ€ in Supabase, then log in.";
 });
 $("logout").addEventListener("click", () => sb.auth.signOut());
 
@@ -174,7 +174,7 @@ async function loadReports(){
 function initMap(){
   if(map) return setTimeout(() => map.invalidateSize(), 50);
   map = L.map("map").setView([20, 0], 2);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom:19, attribution:"© OpenStreetMap contributors"}).addTo(map);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom:19, attribution:"Â© OpenStreetMap contributors"}).addTo(map);
   map.on("click", e => setPin(e.latlng.lat, e.latlng.lng, null));
   locate();
 }
@@ -186,12 +186,12 @@ function setPin(lat, lng, acc, zoom){
   } else marker.setLatLng([lat, lng]);
   if(zoom) map.setView([lat, lng], zoom);
   $("gpsInfo").textContent = acc != null
-    ? `GPS accuracy ±${Math.round(acc)} m. Drag the pin to adjust.`
+    ? `GPS accuracy Â±${Math.round(acc)} m. Drag the pin to adjust.`
     : "Pin placed manually. Drag it to adjust.";
 }
 function locate(){
   if(!navigator.geolocation) return $("gpsInfo").textContent = "GPS unavailable. Tap the map to place the pin.";
-  $("gpsInfo").textContent = "Finding you…";
+  $("gpsInfo").textContent = "Finding youâ€¦";
   navigator.geolocation.getCurrentPosition(
     p => setPin(p.coords.latitude, p.coords.longitude, p.coords.accuracy, 17),
     () => $("gpsInfo").textContent = "Location blocked. Tap the map to place the pin.",
@@ -218,11 +218,11 @@ async function compress(file, maxBytes = 1000000){
 }
 $("photo").addEventListener("change", async e => {
   const f = e.target.files[0]; if(!f) return;
-  $("photoInfo").textContent = "Compressing…";
+  $("photoInfo").textContent = "Compressingâ€¦";
   try {
     photoBlob = await compress(f);
     $("preview").src = URL.createObjectURL(photoBlob); $("preview").classList.remove("hidden");
-    $("photoInfo").textContent = `Ready · ${Math.round(photoBlob.size / 1024)} KB`;
+    $("photoInfo").textContent = `Ready Â· ${Math.round(photoBlob.size / 1024)} KB`;
   } catch { photoBlob = null; $("photoInfo").textContent = "Could not read that image."; }
 });
 
@@ -231,7 +231,7 @@ $("reportForm").addEventListener("submit", async e => {
   e.preventDefault();
   if(!photoBlob) return toast("Add a photo first");
   if(pos.lat == null) return toast("Set the location on the map");
-  const btn = $("submitBtn"); busy(btn, true, "Sending…");
+  const btn = $("submitBtn"); busy(btn, true, "Sendingâ€¦");
   try {
     const path = `${user.id}/${Date.now()}.jpg`;
     const up = await sb.storage.from("report-photos").upload(path, photoBlob, {contentType:"image/jpeg", cacheControl:"3600"});
